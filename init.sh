@@ -14,7 +14,7 @@ fi
 # ---------------------------------------------------------------------------
 
 REPO_URL="https://github.com/MrKumaran/SystemConfiguration.git"
-REPO_DIR="$HOME/SystemConfig"
+REPO_DIR="$HOME/SystemConfiguration"
 
 BREW_PACKAGES=(eza fastfetch ncdu btop podman zsh-autosuggestions)
 
@@ -127,19 +127,19 @@ step_repo() {
     if [ -d "$REPO_DIR/.git" ]; then
         git -C "$REPO_DIR" remote set-url origin "$REPO_URL"
         if git_auth -C "$REPO_DIR" pull --ff-only -q; then
-            report "~/SystemConfig" "updated to latest"
+            report "~/SystemConfiguration" "updated to latest"
         else
-            report "~/SystemConfig" "PULL FAILED - local changes in the repo? fix them and re-run"
+            report "~/SystemConfiguration" "PULL FAILED - local changes in the repo? fix them and re-run"
             exit 1
         fi
     elif [ -e "$REPO_DIR" ]; then
-        report "~/SystemConfig" "EXISTS but is not a git repo - move it away and re-run"
+        report "~/SystemConfiguration" "EXISTS but is not a git repo - move it away and re-run"
         exit 1
     else
         if git_auth clone -q "$REPO_URL" "$REPO_DIR"; then
-            report "~/SystemConfig" "cloned"
+            report "~/SystemConfiguration" "cloned"
         else
-            report "~/SystemConfig" "CLONE FAILED"
+            report "~/SystemConfiguration" "CLONE FAILED"
             exit 1
         fi
     fi
@@ -440,7 +440,7 @@ sync_rc() {
     local base="$TMP_DIR/$file.base" body="$TMP_DIR/$file.body" new="$TMP_DIR/$file.new"
 
     if [ ! -f "$repo_src" ]; then
-        report "~/$file" "SKIPPED - $file not found in ~/SystemConfig"
+        report "~/$file" "SKIPPED - $file not found in ~/SystemConfiguration"
         return 1
     fi
     {
@@ -541,8 +541,8 @@ main() {
 
     say ""
     say "Done. Start zsh now with:  zsh      (new terminals open in zsh)"
-    say "To fetch updates later:    ~/SystemConfig/init.sh -upgrade"
-    say "To undo the config:        ~/SystemConfig/rmconfig.sh"
+    say "To fetch updates later:    ~/SystemConfiguration/init.sh -upgrade"
+    say "To undo the config:        ~/SystemConfiguration/rmconfig.sh"
 }
 
 main "$@"
