@@ -1,0 +1,37 @@
+autoload -Uz vcs_info
+precmd() { vcs_info }
+zstyle ':vcs_info:*' enable git
+zstyle ':vcs_info:git:*' formats ' (%b)'
+setopt prompt_subst
+
+# Color
+export CLICOLOR=1
+PROMPT='%K{#000000}%F{yellow}zsh%f%k %F{green}%n%f@%B%F{cyan}%M%f%b %F{magenta}%~%f%F{yellow}${vcs_info_msg_0_}%f %# '
+RPROMPT='%F{red}%w, %*%f'
+
+export LSCOLORS="FxFxCxDxBxegedabBBaced"
+
+# Tab auto-completion
+autoload -Uz compinit
+if [[ -n $HOME/.zcompdump(#qN.mh-24) ]]; then
+    compinit -C
+else
+    compinit
+fi
+zstyle ':completion:*' menu select                    # arrow-key menu for matches
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}' # case-insensitive matching
+
+# Up/Down: search history by cmd
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+bindkey '^[[A' up-line-or-beginning-search
+bindkey '^[[B' down-line-or-beginning-search
+
+# Ghost-text suggestions from history
+# (brew installs it; HOMEBREW_PREFIX comes from `brew shellenv` and differs per machine)
+_zas="${HOMEBREW_PREFIX:-/opt/homebrew}/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
+[[ -f $_zas ]] && source "$_zas"
+unset _zas
+ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+

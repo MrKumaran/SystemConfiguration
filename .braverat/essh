@@ -1,0 +1,258 @@
+#!/usr/bin/env zsh
+
+essh() {
+    local ESSH_FILE="$HOME/.braverat/dotfiles/.essh"
+    local TUI_LIB="$HOME/.braverat/tui"
+
+    # Ensure dotfiles directory and file exist
+    mkdir -p "$(dirname "$ESSH_FILE")"
+    [ ! -f "$ESSH_FILE" ] && touch "$ESSH_FILE"
+
+    if [ ! -f "$TUI_LIB" ]; then
+        echo "Error: UI Framework not found at $TUI_LIB."
+        return 1
+    fi
+
+    source "$TUI_LIB"
+
+    # 1. MAIN MENU
+    if [[ $# -eq 0 ]]; then
+        local hosts=()
+        if [ -s "$ESSH_FILE" ]; then
+            while IFS= read -r line; do
+                hosts+=("$line")
+            done < <(cut -d',' -f1 "$ESSH_FILE")
+        fi
+
+        local options=("+ Add New Connection" "${hosts[@]}")
+        local selected=$(tui_choose "Select host or add new (type to search, ESC to go back):" "${options[@]}")
+
+        [[ -z "$selected" ]] && return 0
+
+        if [[ "$selected" == "+ Add New Connection" ]]; then
+            set -- "-a"
+        else
+            tui_info "Connecting to $selected..."
+            ssh "$selected"
+            return 0
+        fi
+    fi
+
+    # 2. COMMAND HANDLING
+    case "$1" in
+        -ls)
+            if [ ! -s "$ESSH_FILE" ]; then
+                tui_warn "No connections saved."
+            else
+                echo -e "\n${TUI_BOLD}Saved SSH Connections:${TUI_RESET}"
+                (echo "Host,Auth Method"; cat "$ESSH_FILE") | column -s ',' -t
+                echo ""
+            fi
+            ;;
+
+        -a)
+            local target="$2"
+
+            if [[ -z "$target" ]]; then
+                local input_user
+                tui_input "Enter Username (e.g., ubuntu): " input_user
+                [[ -z "$input_user" ]] && return 0
+
+                local input_host
+                tui_input "Enter Hostname/IP (e.g., ubuntu/192.168.1.10): " input_host
+                [[ -z "$input_host" ]] && return 0
+
+                target="${input_user}@${input_host}"
+                echo ""
+            fi
+
+            local auth_opts=("Password" "Copy New SSH Key (Runs ssh-copy-id)" "SSH Key (Already Configured)")
+            local auth_choice=$(tui_choose "Auth Method for $target:" "${auth_opts[@]}")
+
+            [[ -z "$auth_choice" ]] && return 0
+            local method="password"
+
+            if [[ "$auth_choice" == "Copy New SSH Key (Runs ssh-copy-id)" ]]; then
+                if ! ls "$HOME"/.ssh/*.pub > /dev/null 2>&1; then
+                    echo ""
+                    tui_warn "No public SSH keys found on your machine!"
+
+                    if tui_confirm "Would you like to generate a secure SSH key now?"; then
+                        tui_info "Generating modern ED25519 SSH key..."
+                        ssh-keygen -t ed25519
+                    else
+                        tui_error "Skipping key generation. Defaulting to password."
+                        auth_choice="Password"
+                    fi
+                fi
+
+                if [[ "$auth_choice" != "Password" ]]; then
+                    tui_info "Setting up public key..."
+                    if ssh-copy-id "$target"; then
+                        method="key"
+                    else
+                        tui_error "Failed to copy key. Saving as password method."
+                    fi
+                fi
+            elif [[ "$auth_choice" == "SSH Key (Already Configured)" ]]; then
+                method="key"
+            fi
+
+            command grep -v "^${target}," "$ESSH_FILE" > "${ESSH_FILE}.tmp" 2>/dev/null || true
+            command mv "${ESSH_FILE}.tmp" "$ESSH_FILE"
+            echo "${target},${method}" >> "$ESSH_FILE"
+
+            tui_info "\nSaved! Connecting to $target..."
+            ssh "$target"
+            ;;
+
+        -e)
+            if [ ! -s "$ESSH_FILE" ]; then
+                tui_warn "No connections saved."
+                return 0
+            fi
+
+            local hosts=()
+            while IFS= read -r line; do
+                hosts+=("$line")
+            done < <(cut -d',' -f1 "$ESSH_FILE")
+
+            local selected=$(tui_choose "Select connection to edit (type to search, ESC to go back):" "${hosts[@]}")
+            [[ -z "$selected" ]] && return 0
+
+            local old_user="${selected%@*}"
+            local old_host="${selected#*@}"
+
+            local new_user
+            tui_input "Edit Username: " new_user "$old_user"
+            [[ -z "$new_user" ]] && return 0
+
+            local new_host
+            tui_input "Edit Hostname/IP: " new_host "$old_host"
+            [[ -z "$new_host" ]] && return 0
+
+            local new_target="${new_user}@${new_host}"
+            local auth_method=$(command grep "^${selected}," "$ESSH_FILE" | cut -d',' -f2)
+
+            sed "s/^${selected},${auth_method}$/${new_target},${auth_method}/" "$ESSH_FILE" > "${ESSH_FILE}.tmp"
+            command mv "${ESSH_FILE}.tmp" "$ESSH_FILE"
+
+            echo ""
+            tui_info "Successfully updated $selected -> $new_target"
+            ;;
+
+        -o)
+            if [ ! -s "$ESSH_FILE" ]; then
+                tui_warn "No connections to order."
+                return 0
+            fi
+
+            local lines=()
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && lines+=("$line")
+            done < "$ESSH_FILE"
+
+            local reordered
+            reordered=$(tui_reorder "Space to grab/drop, Arrows to move, Enter to save (q to cancel):" "${lines[@]}")
+
+            if [[ -z "$reordered" ]]; then
+                tui_warn "Reordering cancelled."
+                return 0
+            fi
+
+            echo "$reordered" > "$ESSH_FILE"
+
+            clear
+            echo -e "\n${TUI_BOLD}New Order Saved:${TUI_RESET}"
+            (echo "Host,Auth Method"; cat "$ESSH_FILE") | column -s ',' -t
+            echo ""
+            ;;
+
+        -k)
+            local pw_hosts=()
+            while IFS= read -r line; do
+                pw_hosts+=("$line")
+            done < <(command grep ",password$" "$ESSH_FILE" | cut -d',' -f1)
+
+            if [[ ${#pw_hosts[@]} -eq 0 ]]; then
+                tui_warn "No password-based connections found. All are using keys!"
+                return 0
+            fi
+
+            local selected=$(tui_choose "Select host to upgrade to SSH key (type to search, ESC to go back):" "${pw_hosts[@]}")
+            [[ -z "$selected" ]] && return 0
+
+            tui_info "Setting up public key for $selected..."
+            if ssh-copy-id "$selected"; then
+                command grep -v "^${selected}," "$ESSH_FILE" > "${ESSH_FILE}.tmp"
+                echo "${selected},key" >> "${ESSH_FILE}.tmp"
+                command mv "${ESSH_FILE}.tmp" "$ESSH_FILE"
+
+                tui_info "Successfully upgraded $selected to SSH Key!"
+            fi
+            ;;
+
+        rm)
+            if [[ -n "$2" ]]; then
+                local target="$2"
+                if command grep -q "^${target}," "$ESSH_FILE"; then
+                    command grep -v "^${target}," "$ESSH_FILE" > "${ESSH_FILE}.tmp"
+                    command mv "${ESSH_FILE}.tmp" "$ESSH_FILE"
+                    tui_error "Removed: $target"
+                else
+                    tui_warn "Not found: $target"
+                fi
+                return 0
+            fi
+
+            if [ ! -s "$ESSH_FILE" ]; then
+                tui_warn "No connections to remove."
+                return 0
+            fi
+
+            local hosts=()
+            while IFS= read -r line; do
+                hosts+=("$line")
+            done < <(cut -d',' -f1 "$ESSH_FILE")
+
+            local selected=$(tui_multiselect "Use SPACEBAR to select, then ENTER to confirm deletion (Press 'q' to go back):" "${hosts[@]}")
+
+            if [[ -z "$selected" ]]; then
+                tui_warn "No hosts selected. Cancelled."
+                return 0
+            fi
+
+            echo ""
+            tui_error "You are about to remove the following hosts:"
+            echo "$selected" | sed 's/^/  - /'
+            echo ""
+
+            if ! tui_confirm "Are you sure you want to delete these hosts?"; then
+                tui_warn "Deletion cancelled."
+                return 0
+            fi
+
+            while IFS= read -r k; do
+                [[ -z "$k" ]] && continue
+                command grep -v "^${k}," "$ESSH_FILE" > "${ESSH_FILE}.tmp"
+                command mv "${ESSH_FILE}.tmp" "$ESSH_FILE"
+                tui_error "Removed: $k"
+            done <<< "$selected"
+            ;;
+
+        *)
+            echo -e "${TUI_BOLD}Usage:${TUI_RESET}"
+            echo "  essh                  : Select and connect to a saved host"
+            echo "  essh -a               : Interactive prompt to add a new host"
+            echo "  essh -a <user>@<host> : Add specific host, setup key/password"
+            echo "  essh -e               : Edit an existing connection's username/host"
+            echo "  essh -o               : Reorder the list of saved connections"
+            echo "  essh -ls              : List all saved connections in a table"
+            echo "  essh rm               : Interactive remove (multi-select)"
+            echo "  essh rm <user>@<host> : Direct remove"
+            echo "  essh -k               : Upgrade a password host to SSH key"
+            ;;
+    esac
+}
+
+essh "$@"

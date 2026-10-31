@@ -1,0 +1,313 @@
+# tui - small terminal UI toolkit (menus, multi-select, reorder, input,
+# confirm) with NO external dependencies.
+
+# It runs in BOTH zsh and bash (including the bash 3.2)
+
+# Colors
+TUI_MAGENTA=$'\033[38;5;201m'
+TUI_CYAN=$'\033[38;5;51m'
+TUI_ORANGE=$'\033[38;5;208m'
+TUI_BOLD=$'\033[1m'
+TUI_RESET=$'\033[0m'
+
+tui_info()  { printf '%s\n' "${TUI_CYAN}$1${TUI_RESET}"; }
+tui_warn()  { printf '%s\n' "${TUI_MAGENTA}$1${TUI_RESET}"; }
+tui_error() { printf '%s\n' "${TUI_ORANGE}$1${TUI_RESET}"; }
+
+# Shell Differences
+
+# _tui_getc VAR [TIMEOUT] - read ONE raw byte from the terminal into VAR.
+# Returns non-zero on timeout or EOF. zsh spells "one byte" as -k, bash as
+# -n. zsh must NOT get -u: with it, -k reads the line-buffered fd instead of
+# the terminal, so keys only arrive after Enter. bash 3.2 only accepts
+# whole-second timeouts, so a lone ESC waits 1s there (newer bash and zsh use
+# the 0.05s we ask for).
+if [ -n "${ZSH_VERSION-}" ]; then
+    _tui_getc() {
+        if [ -n "${2-}" ]; then
+            IFS= read -rs -k 1 -t "$2" "$1"
+        else
+            IFS= read -rs -k 1 "$1"
+        fi
+    }
+else
+    _tui_getc() {
+        local t=${2-}
+        if [ -n "$t" ] && [ "${BASH_VERSINFO[0]}" -lt 4 ]; then t=1; fi
+        if [ -n "$t" ]; then
+            IFS= read -rs -n 1 -t "$t" "$1"
+        else
+            IFS= read -rs -n 1 "$1"
+        fi
+    }
+fi
+
+# _tui_lower STRING - print STRING lowercased (used by the search filter).
+if [ -n "${ZSH_VERSION-}" ]; then
+    eval '_tui_lower() { printf "%s" "${(L)1}"; }'
+elif [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+    eval '_tui_lower() { printf "%s" "${1,,}"; }'
+else
+    _tui_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+fi
+
+# zsh arrays start at 1, bash arrays at 0. Every function below that indexes
+# an array begins with this line so zsh counts from 0 as well - `localoptions`
+# limits the change to that one function, nothing leaks into the user's shell:
+#     [ -n "${ZSH_VERSION-}" ] && setopt localoptions ksh_arrays
+
+# Key reader
+# Sets $_tui_key to: up / down / enter / space / backspace / esc / char:<c> / other
+_tui_readkey() {
+    local key='' k2='' k3=''
+    _tui_key=""
+    if ! _tui_getc key; then
+        _tui_key=esc
+        return
+    fi
+    case "$key" in
+        $'\033')
+            if _tui_getc k2 0.05; then
+                if [ "$k2" = "[" ] || [ "$k2" = "O" ]; then
+                    _tui_getc k3 0.05
+                    case "$k3" in
+                        A) _tui_key=up ;;
+                        B) _tui_key=down ;;
+                        *) _tui_key=other ;;
+                    esac
+                else
+                    _tui_key=esc
+                fi
+            else
+                _tui_key=esc
+            fi
+            ;;
+        ''|$'\n'|$'\r') _tui_key=enter ;; 
+        ' ') _tui_key=space ;;
+        $'\177'|$'\b') _tui_key=backspace ;;
+        $'\004') _tui_key=esc ;;  
+        [[:print:]]) _tui_key="char:$key" ;;
+        *) _tui_key=other ;;    
+    esac
+}
+
+# Frame drawing
+#
+# _tui_frame_begin DRAWN - start a frame over the DRAWN lines shown last time
+_tui_frame_begin() {
+    _tui_frame=""
+    (( $1 > 0 )) && _tui_frame=$'\033['"$1"$'A\r'
+}
+
+# _tui_put LINE - add LINE to the frame, clearing whatever was left of the old line
+_tui_put() {
+    _tui_frame+="$1"$'\033[K\n'
+}
+
+# _tui_frame_end - clear leftover old lines below and draw the frame
+_tui_frame_end() {
+    _tui_frame+=$'\033[J'
+    printf '%s' "$_tui_frame" >&2
+}
+
+# Truncate a line so it never wraps (wrapping breaks redraw math).
+_tui_fit() {
+    local max=$(( ${COLUMNS:-80} - 8 ))
+    (( max < 10 )) && max=10
+    if (( ${#1} > max )); then
+        _tui_line="${1:0:$max}..."
+    else
+        _tui_line="$1"
+    fi
+}
+
+# Interactive Single Select (with type-to-search filter)
+# Type to filter, Up/Down to move, Enter to select, ESC to cancel.
+tui_choose() {
+    [ -n "${ZSH_VERSION-}" ] && setopt localoptions ksh_arrays
+    local header="$1"; shift
+    local -a all view
+    all=("$@")
+    local filter="" lfilter="" cur=0 drawn=0 o lo i count refilter=1
+
+    while true; do
+        # Re-filter only when the search text changed, not on every Up/Down
+        if (( refilter )); then
+            view=()
+            if [ -z "$filter" ]; then
+                view=("${all[@]}")
+            else
+                lfilter=$(_tui_lower "$filter")
+                for o in "${all[@]}"; do
+                    lo=$(_tui_lower "$o")
+                    [[ "$lo" == *"$lfilter"* ]] && view+=("$o")
+                done
+            fi
+            refilter=0
+        fi
+        count=${#view[@]}
+        (( cur >= count )) && cur=$(( count - 1 ))
+        (( cur < 0 )) && cur=0
+
+        _tui_frame_begin $drawn
+        _tui_put "${TUI_BOLD}${header}${TUI_RESET}"
+        _tui_put "Search: ${filter}"
+        drawn=2
+        if (( count == 0 )); then
+            _tui_put "   (no matches)"
+            (( drawn++ ))
+        else
+            for (( i = 0; i < count; i++ )); do
+                _tui_fit "${view[i]}"
+                if (( i == cur )); then
+                    _tui_put " ${TUI_MAGENTA}> ${_tui_line}${TUI_RESET}"
+                else
+                    _tui_put "   ${_tui_line}"
+                fi
+                (( drawn++ ))
+            done
+        fi
+        _tui_frame_end
+
+        _tui_readkey
+        case "$_tui_key" in
+            up)        (( cur-- )); (( cur < 0 )) && cur=$(( count - 1 )) ;;
+            down)      (( cur++ )); (( cur >= count )) && cur=0 ;;
+            enter)     if (( count > 0 )); then printf '%s\n' "${view[cur]}"; return 0; fi ;;
+            esc)       echo ""; return 0 ;;
+            backspace) filter="${filter%?}"; cur=0; refilter=1 ;;
+            space)     filter+=" "; cur=0; refilter=1 ;;
+            char:*)    filter+="${_tui_key#char:}"; cur=0; refilter=1 ;;
+        esac
+    done
+}
+
+# Interactive Multi Select
+# Space to toggle, Up/Down to move, Enter to confirm, q or ESC to cancel.
+tui_multiselect() {
+    [ -n "${ZSH_VERSION-}" ] && setopt localoptions ksh_arrays
+    local header="$1"; shift
+    local -a options selected
+    options=("$@")
+    local cur=0 count=${#options[@]} drawn=0 i box
+
+    for (( i = 0; i < count; i++ )); do selected[i]=0; done
+
+    while true; do
+        _tui_frame_begin $drawn
+        _tui_put "${TUI_BOLD}${header}${TUI_RESET}"
+        drawn=1
+        for (( i = 0; i < count; i++ )); do
+            box="[ ]"
+            [ "${selected[i]}" -eq 1 ] && box="[x]"
+            _tui_fit "${options[i]}"
+            if (( i == cur )); then
+                _tui_put " ${TUI_MAGENTA}> ${box} ${_tui_line}${TUI_RESET}"
+            else
+                _tui_put "   ${box} ${_tui_line}"
+            fi
+            (( drawn++ ))
+        done
+        _tui_frame_end
+
+        _tui_readkey
+        case "$_tui_key" in
+            up)     (( cur-- )); (( cur < 0 )) && cur=$(( count - 1 )) ;;
+            down)   (( cur++ )); (( cur >= count )) && cur=0 ;;
+            space)  selected[cur]=$(( 1 - selected[cur] )) ;;
+            enter)  break ;;
+            esc|char:q|char:Q) echo ""; return 0 ;;
+        esac
+    done
+
+    for (( i = 0; i < count; i++ )); do
+        [ "${selected[i]}" -eq 1 ] && printf '%s\n' "${options[i]}"
+    done
+}
+
+# Interactive Reorder
+# Space to grab/drop, Up/Down to move, Enter to save, q or ESC to cancel.
+tui_reorder() {
+    [ -n "${ZSH_VERSION-}" ] && setopt localoptions ksh_arrays
+    local header="$1"; shift
+    local -a options
+    options=("$@")
+    local cur=0 count=${#options[@]} grabbed=0 drawn=0 prev temp i
+
+    while true; do
+        _tui_frame_begin $drawn
+        _tui_put "${TUI_BOLD}${header}${TUI_RESET}"
+        drawn=1
+        for (( i = 0; i < count; i++ )); do
+            _tui_fit "${options[i]}"
+            if (( i == cur )); then
+                if (( grabbed == 1 )); then
+                    _tui_put " ${TUI_ORANGE}* ${_tui_line}${TUI_RESET}"
+                else
+                    _tui_put " ${TUI_MAGENTA}> ${_tui_line}${TUI_RESET}"
+                fi
+            else
+                _tui_put "   ${_tui_line}"
+            fi
+            (( drawn++ ))
+        done
+        _tui_frame_end
+
+        _tui_readkey
+        prev=$cur
+        case "$_tui_key" in
+            up)    (( cur-- )); (( cur < 0 )) && cur=$(( count - 1 )) ;;
+            down)  (( cur++ )); (( cur >= count )) && cur=0 ;;
+            space) grabbed=$(( 1 - grabbed )) ;;
+            enter) break ;;
+            esc|char:q|char:Q) echo ""; return 1 ;;
+        esac
+
+        if (( grabbed == 1 && cur != prev )); then
+            temp="${options[prev]}"
+            options[prev]="${options[cur]}"
+            options[cur]="$temp"
+        fi
+    done
+
+    for (( i = 0; i < count; i++ )); do printf '%s\n' "${options[i]}"; done
+    return 0
+}
+
+# Input handling
+# Reads key by key so ESC can cancel: on ESC the variable is set EMPTY (the
+# default is NOT used) and it returns 1 - callers treat empty as "go back".
+tui_input() {
+    local prompt="$1"
+    local var_name="$2"
+    local default="$3"
+    local reply="" p="$prompt"
+
+    [[ "$p" != *' ' ]] && p+=' '
+    [[ -n "$default" ]] && p+="[${default}] "
+
+    printf '? %s' "$p" >&2
+    while true; do
+        _tui_readkey
+        case "$_tui_key" in
+            enter)     break ;;
+            esc)       printf '\n' >&2; eval "$var_name=''"; return 1 ;;
+            backspace) if [ -n "$reply" ]; then reply="${reply%?}"; printf '\b \b' >&2; fi ;;
+            space)     reply+=" "; printf ' ' >&2 ;;
+            char:*)    reply+="${_tui_key#char:}"; printf '%s' "${_tui_key#char:}" >&2 ;;
+        esac
+    done
+    printf '\n' >&2
+
+    [[ -z "$reply" ]] && reply="$default"
+    eval "$var_name=\$reply"
+}
+
+# Yes/No Confirmation
+tui_confirm() {
+    local result
+    printf '? %s (y/N): ' "$1" >&2
+    read -r result
+    [[ "$result" =~ ^[Yy]$ ]]
+}
+

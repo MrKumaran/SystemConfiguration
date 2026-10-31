@@ -1,0 +1,193 @@
+#!/usr/bin/env zsh
+
+gt() {
+    local GT_FILE="$HOME/.braverat/dotfiles/.gt"
+    local TUI_LIB="$HOME/.braverat/tui"
+
+    # Ensure dotfiles directory and file exist
+    mkdir -p "$(dirname "$GT_FILE")"
+    [ ! -f "$GT_FILE" ] && touch "$GT_FILE"
+
+    if [ ! -f "$TUI_LIB" ]; then
+        echo "Error: UI Framework not found at $TUI_LIB."
+        return 1
+    fi
+
+    source "$TUI_LIB"
+
+    # 1. MAIN MENU (No arguments): Interactive Jump!
+    if [[ $# -eq 0 ]]; then
+        if [ ! -s "$GT_FILE" ]; then
+            tui_warn "No bookmarks saved yet. Use 'gt <key> .' to add one."
+            return 0
+        fi
+
+        local keys=()
+        while IFS='=' read -r k v; do keys+=("$k"); done < "$GT_FILE"
+
+        local selected_key=$(tui_choose "Select a bookmark to jump to (type to search, ESC to go back):" "${keys[@]}")
+        [[ -z "$selected_key" ]] && return 0
+
+        gt "$selected_key"
+        return 0
+    fi
+
+    case "$1" in
+        -ls)
+            if [ ! -s "$GT_FILE" ]; then
+                tui_warn "No bookmarks saved yet."
+            else
+                echo -e "\n${TUI_BOLD}Saved Directory Bookmarks:${TUI_RESET}"
+                (echo "Bookmark,Path"; sed 's/=/,/' "$GT_FILE") | column -s ',' -t
+                echo ""
+            fi
+            ;;
+
+        rm)
+            if [[ -n "$2" ]]; then
+                local key_to_remove="$2"
+                if command grep -q "^${key_to_remove}=" "$GT_FILE"; then
+                    command grep -v "^${key_to_remove}=" "$GT_FILE" > "${GT_FILE}.tmp"
+                    command mv "${GT_FILE}.tmp" "$GT_FILE"
+                    tui_error "Removed bookmark: $key_to_remove"
+                else
+                    tui_warn "Bookmark '$key_to_remove' not found."
+                fi
+                return 0
+            fi
+
+            if [ ! -s "$GT_FILE" ]; then
+                tui_warn "No bookmarks to remove."
+                return 0
+            fi
+
+            local keys=()
+            while IFS='=' read -r k v; do keys+=("$k"); done < "$GT_FILE"
+
+            local selected=$(tui_multiselect "Space to select bookmarks to remove (Press 'q' to go back), Enter to confirm:" "${keys[@]}")
+            [[ -z "$selected" ]] && return 0
+
+            echo ""
+            tui_error "You are about to remove these bookmarks:"
+            echo "$selected" | sed 's/^/  - /'
+            echo ""
+
+            if ! tui_confirm "Are you sure you want to delete these?"; then
+                tui_warn "Deletion cancelled."
+                return 0
+            fi
+
+            while IFS= read -r k; do
+                [[ -z "$k" ]] && continue
+                command grep -v "^${k}=" "$GT_FILE" > "${GT_FILE}.tmp"
+                command mv "${GT_FILE}.tmp" "$GT_FILE"
+                tui_error "Removed bookmark: $k"
+            done <<< "$selected"
+            ;;
+
+        edit)
+            if [ ! -s "$GT_FILE" ]; then
+                tui_warn "No bookmarks to edit."
+                return 0
+            fi
+
+            local key_to_edit="$2"
+            if [[ -z "$key_to_edit" ]]; then
+                local keys=()
+                while IFS='=' read -r k v; do keys+=("$k"); done < "$GT_FILE"
+
+                key_to_edit=$(tui_choose "Select a bookmark to edit (type to search, ESC to go back):" "${keys[@]}")
+                [[ -z "$key_to_edit" ]] && return 0
+            fi
+
+            local current_path=$(command grep "^${key_to_edit}=" "$GT_FILE" | head -n 1 | cut -d'=' -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')
+            if [[ -z "$current_path" ]]; then
+                tui_warn "Bookmark '$key_to_edit' not found."
+                return 1
+            fi
+
+            local new_key
+            tui_input "Bookmark name:" new_key "$key_to_edit"
+            [[ -z "$new_key" ]] && return 0
+
+            case "$new_key" in
+                *=*) tui_error "Key cannot contain '='."; return 1 ;;
+            esac
+
+            if [[ "$new_key" != "$key_to_edit" ]] && command grep -q "^${new_key}=" "$GT_FILE"; then
+                tui_error "Bookmark '$new_key' already exists."
+                return 1
+            fi
+
+            local new_path
+            tui_input "Directory path:" new_path "$current_path"
+            [[ -z "$new_path" ]] && return 0
+
+            new_path="${new_path/#\~/$HOME}"
+
+            if [ ! -d "$new_path" ]; then
+                if ! tui_confirm "Directory '$new_path' doesn't exist. Save anyway?"; then
+                    tui_warn "Edit cancelled."
+                    return 0
+                fi
+            fi
+
+            command grep -v "^${key_to_edit}=" "$GT_FILE" > "${GT_FILE}.tmp"
+            echo "${new_key}=${new_path}" >> "${GT_FILE}.tmp"
+            command mv "${GT_FILE}.tmp" "$GT_FILE"
+
+            tui_info "Updated: ${key_to_edit} -> ${new_key} = ${new_path}"
+            ;;
+
+        *)
+            if [[ $# -eq 1 ]]; then
+                local key="$1"
+                local target_dir=$(command grep "^${key}=" "$GT_FILE" | head -n 1 | cut -d'=' -f2- | tr -d '\r' | sed 's/[[:space:]]*$//')
+
+                if [[ -n "$target_dir" ]]; then
+                    if [ -d "$target_dir" ]; then
+                        cd "$target_dir" || return 1
+                        tui_info "Jumped to -> $target_dir"
+                    else
+                        tui_error "Directory '$target_dir' no longer exists."
+                    fi
+                else
+                    tui_warn "Bookmark '$key' not found."
+                    echo -e "\n${TUI_BOLD}Usage:${TUI_RESET}"
+                    echo "  gt                 : Interactive jump menu"
+                    echo "  gt -ls             : List all bookmarks"
+                    echo "  gt <key>           : Go to bookmarked directory"
+                    echo "  gt <key> <dir>     : Bookmark a directory (use '.' for current dir)"
+                    echo "  gt edit            : Edit an existing bookmark"
+                    echo "  gt edit <key>      : Direct edit for a bookmark"
+                    echo "  gt rm              : Interactive remove menu"
+                fi
+
+            elif [[ $# -eq 2 ]]; then
+                local key="$1"
+                local target_dir="$2"
+
+                if [[ "$target_dir" == "." ]]; then
+                    target_dir="$PWD"
+                elif [ -d "$target_dir" ]; then
+                    target_dir="$(cd "$target_dir" 2>/dev/null && pwd)"
+                fi
+
+                if command grep -q "^${key}=" "$GT_FILE"; then
+                    command grep -v "^${key}=" "$GT_FILE" > "${GT_FILE}.tmp"
+                    echo "${key}=${target_dir}" >> "${GT_FILE}.tmp"
+                    command mv "${GT_FILE}.tmp" "$GT_FILE"
+                    tui_info "Updated bookmark: $key -> $target_dir"
+                else
+                    echo "${key}=${target_dir}" >> "$GT_FILE"
+                    tui_info "Added bookmark: $key -> $target_dir"
+                fi
+            else
+                tui_error "Invalid number of arguments."
+                return 1
+            fi
+            ;;
+    esac
+}
+
+

@@ -1,0 +1,12 @@
+google() {
+    if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "https://www.google.com/search?q=$*"
+    else
+        open "https://www.google.com/search?q=$*"
+    fi
+}
+
+mkcd() {
+    mkdir -p -- "$1" && cd -P -- "$1"
+}
+

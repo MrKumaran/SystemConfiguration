@@ -1,0 +1,26 @@
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+alias .....='cd ../../../..'
+
+
+alias ls="eza"
+alias tree="eza -T"
+alias ll="ls -la"
+alias grep="grep --color=auto"
+alias mkdir='mkdir -v'
+alias cp='cp -v'
+alias mv='mv -v'
+alias rm='rm -i'
+alias ff='find . -type f -name'
+alias fd='find . -type d -name'
+
+# Brewww
+alias bsc='brew services'
+alias bst='brew services start'
+alias bsp='brew services stop'
+
+# Personal alias
+alias python=python3
+alias docker=podman
+alias ffetch="fastfetch"

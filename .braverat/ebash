@@ -1,0 +1,27 @@
+# Terminal coloring
+export CLICOLOR=1
+export LSCOLORS="FxFxCxDxBxegedabBBaced"
+
+parse_git_branch() {
+    git branch 2> /dev/null | sed -e '/^[^*]/d' -e 's/* \(.*\)/ (\1)/'
+}
+
+# Prompt line color
+PS1='\[\033[40;33m\]bash\[\033[0m\] \[\033[32m\]\u\[\033[0m\]@\[\033[1;36m\]\h\[\033[0m\] \[\033[35m\]\w\[\033[0m\]\[\033[33m\]$(parse_git_branch)\[\033[0m\] % '
+
+# Clock on the right
+shopt -s checkwinsize
+_bash_right_prompt() {
+    local right_text=$(date +"%a %d, %H:%M:%S")
+    printf "\033[2m%*s\033[0m\r" "$COLUMNS" "$right_text"
+}
+[[ "$PROMPT_COMMAND" == *_bash_right_prompt* ]] || PROMPT_COMMAND="_bash_right_prompt${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+
+# autocd (bash 4+)
+shopt -s autocd 2>/dev/null
+shopt -s cdspell
+
+# Tab auto-completion
+[[ $- == *i* ]] && bind 'set completion-ignore-case on'
+[[ $- == *i* ]] && bind 'set show-all-if-ambiguous on'
+
